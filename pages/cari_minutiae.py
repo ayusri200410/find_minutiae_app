@@ -357,7 +357,7 @@ class CariMinutiaePage(ctk.CTkFrame):
         parent = self.controller
 
         # Frame full-window hitam transparan
-        self.loading_overlay = ctk.CTkFrame(parent, fg_color="black")
+        self.loading_overlay = ctk.CTkFrame(parent, fg_color="gray15")
 
         # --- load GIF ---
         base_dir = os.path.dirname(os.path.dirname(__file__))  # root project
@@ -417,7 +417,7 @@ class CariMinutiaePage(ctk.CTkFrame):
         self.loading_image_label.image = frame
 
         # jadwalkan frame berikut
-        self.loading_anim_after_id = self.after(25, self._animate_loading)
+        self.loading_anim_after_id = self.after(20, self._animate_loading)
 
     def _show_loading_overlay(self):
         """Tampilkan overlay loading di atas seluruh aplikasi."""
@@ -447,6 +447,8 @@ class CariMinutiaePage(ctk.CTkFrame):
             self.loading_anim_after_id = self.after(100, self._animate_loading)
 
         self.update_idletasks()
+
+  
 
     def _hide_loading_overlay(self):
         """Sembunyikan overlay dan hentikan animasi."""
@@ -509,9 +511,11 @@ class CariMinutiaePage(ctk.CTkFrame):
             result = None
 
             try:
-                # --- PREPROSES GAMBAR UNTUK MODEL FINGERFLOW ---
+                # --- 1. PREPROSES GAMBAR UNTUK MODEL FINGERFLOW ---
                 # Update status: menyiapkan gambar
-                self.after(0, lambda: self._set_loading_text("Sedang memproses: menyiapkan gambar untuk model..."))
+                self.after(0, lambda: self._set_loading_text(
+                    "Sedang memproses: menyiapkan gambar untuk model..."
+                ))
 
                 try:
                     model_input_path = _prepare_image_for_model(self.filepath, target_max_side=512)
@@ -519,34 +523,49 @@ class CariMinutiaePage(ctk.CTkFrame):
                     print("Gagal menyiapkan gambar untuk model, gunakan gambar asli:", e)
                     model_input_path = self.filepath
 
-                # 1. Jalankan Model Ekstraksi & Simpan File ke Disk
-                # Update status: ekstraksi minutiae
-                self.after(0, lambda: self._set_loading_text("Sedang memproses: ekstraksi minutiae (FingerFlow)..."))
+                # --- 2. SIAPKAN CALLBACK UNTUK PROGRESS DARI FINGERFLOW ---
+                def progress_to_ui(msg: str):
+                    # dipanggil di thread worker → lempar ke main thread
+                    def _update():
+                        short = msg.replace("\n", " ").strip()
+                        if len(short) > 30:
+                            short = short[:30] + "..."
+                        self._set_loading_text(f"Sedang memproses: {short}")
+                    self.after(0, _update)
 
+                # --- 3. JALANKAN EKSTRAKSI MINUTIAE (FINGERFLOW) ---
+                # (run_minutiae_extraction di db_manager.py sudah dimodif dengan progress_callback)
                 try:
-                    path_mentah, path_ekstraksi = run_minutiae_extraction(model_input_path, judul)
+                    path_mentah, path_ekstraksi = run_minutiae_extraction(
+                        model_input_path,
+                        judul,
+                        progress_callback=progress_to_ui
+                    )
                 except Exception as e:
                     error = ("Error Ekstraksi", f"Gagal Ekstraksi! Cek konsol. Error: {e}")
                     path_mentah, path_ekstraksi = None, None
 
+                # --- 4. SIMPAN KE DATABASE JIKA BERHASIL ---
                 if not error and path_mentah and path_ekstraksi:
-                    # 2. Simpan Data Kasus ke Database
-                    self.after(0, lambda: self._set_loading_text("Sedang memproses: menyimpan hasil ke database..."))
+                    # update status: simpan ke DB
+                    self.after(0, lambda: self._set_loading_text(
+                        "Sedang memproses: menyimpan hasil ke database..."
+                    ))
 
                     user_id = self.controller.logged_in_user_id if hasattr(self.controller, 'logged_in_user_id') else 1 
-                    
+
                     conn = get_db_connection()
                     cursor = conn.cursor()
                     cursor.execute('''
                         INSERT INTO history (judul_kasus, nomor_lp, tanggal_kejadian, path_mentah, path_ekstraksi, user_id)
                         VALUES (?, ?, ?, ?, ?, ?)
                     ''', (judul, nomor_lp, tanggal, path_mentah, path_ekstraksi, user_id)) 
-                    
+
                     last_id = cursor.lastrowid
                     conn.commit()
                     conn.close()
 
-                    # Siapkan data untuk halaman hasil
+                    # Data untuk halaman hasil
                     result = {
                         "success": True,
                         "last_id": last_id,
@@ -556,16 +575,16 @@ class CariMinutiaePage(ctk.CTkFrame):
                         "path_mentah": path_mentah,
                         "path_ekstraksi": path_ekstraksi,
                     }
+
                 elif not error:
-                    # path_mentah atau path_ekstraksi kosong
+                    # path_mentah atau path_ekstraksi kosong tapi nggak ada exception
                     error = ("Error", "Gagal menyimpan file hasil ekstraksi.")
 
             except Exception as e:
                 # fallback error tak terduga
                 error = ("Error Tak Terduga", str(e))
 
-            # KEMBALI KE MAIN THREAD UNTUK UPDATE UI & PINDAH HALAMAN
-            # (di sini sekaligus bisa update teks terakhir kalau mau)
+            # --- 5. BALIK KE MAIN THREAD UNTUK UPDATE UI & PINDAH HALAMAN ---
             self.after(0, lambda: self._on_process_finished(result, error))
 
 
@@ -573,70 +592,87 @@ class CariMinutiaePage(ctk.CTkFrame):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_process_finished(self, result, error):
-        if error is None:
-            try:
-                self._set_loading_text("Sedang memproses: memuat tampilan hasil...")
-            except Exception:
-                pass
-
-        # Baru sembunyikan overlay
-        try:
-            self._hide_loading_overlay()
-        except Exception as e:
-            print("WARNING: gagal menyembunyikan overlay loading:", e)
-
-
         """Dipanggil di MAIN THREAD setelah thread worker selesai."""
 
-        # Sembunyikan overlay dulu
-        try:
-            self._hide_loading_overlay()
-        except Exception as e:
-            print("WARNING: gagal menyembunyikan overlay loading:", e)
-
-        # Kalau ada error
+        # 1) Kalau ada error → langsung hide overlay & tampilkan pesan
         if error is not None:
+            try:
+                self._hide_loading_overlay()
+            except Exception as e:
+                print("WARNING: gagal menyembunyikan overlay loading:", e)
+
             title, msg = error
+            from tkinter import messagebox
             messagebox.showerror(title, msg)
             self.upload_label.configure(text="Ekstraksi Gagal!", text_color="red")
             return
 
-        # Kalau sukses
+        # 2) Kalau result tidak valid
         if result is None or not result.get("success"):
+            try:
+                self._hide_loading_overlay()
+            except Exception as e:
+                print("WARNING: gagal menyembunyikan overlay loading:", e)
+
+            from tkinter import messagebox
             messagebox.showerror("Error", "Terjadi kesalahan, data tidak lengkap.")
             self.upload_label.configure(text="Ekstraksi Gagal!", text_color="red")
             return
 
-        # Ambil data dari result
-        path_ekstraksi = result["path_ekstraksi"]
-        path_mentah = result["path_mentah"]
-        last_id = result["last_id"]
-        judul = result["judul"]
-        nomor_lp = result["nomor_lp"]
-        tanggal = result["tanggal"]
+        # 3) Kasus sukses → tampilkan dulu teks selesai
+        try:
+            self._set_loading_text("Selesai: memuat tampilan hasil...")
+        except Exception:
+            pass
 
-        # 1. Tampilkan Gambar Hasil Ekstraksi di panel kanan
-        _display_image(self.extracted_image_holder, path_ekstraksi)
+        # Bungkus sisa logic di fungsi kecil supaya bisa di-delay
+        def finalize():
+            # Sembunyikan overlay
+            try:
+                self._hide_loading_overlay()
+            except Exception as e:
+                print("WARNING: gagal menyembunyikan overlay loading:", e)
 
-        # 2. Update label upload
-        self.upload_label.configure(text=os.path.basename(self.filepath), text_color="green")
+            # Ambil data dari result
+            path_ekstraksi = result["path_ekstraksi"]
+            path_mentah = result["path_mentah"]
+            last_id = result["last_id"]
+            judul = result["judul"]
+            nomor_lp = result["nomor_lp"]
+            tanggal = result["tanggal"]
 
-        # 3. Pindah ke Halaman Hasil
-        data = {
-            'id': last_id,
-            'judul': judul, 
-            'nomor_lp': nomor_lp, 
-            'tanggal': tanggal, 
-            'path_ekstraksi': path_ekstraksi
-        }
+            # 1. Tampilkan gambar hasil ekstraksi di panel kanan
+            _display_image(self.extracted_image_holder, path_ekstraksi)
 
-        # Bersihkan form
-        self.entry_judul.delete(0, ctk.END)
-        self.entry_lp.delete(0, ctk.END)
-        self.entry_tanggal.clear()
-        self.filepath = None
+            # 2. Update label upload (file yang dipilih)
+            if self.filepath:
+                import os
+                self.upload_label.configure(
+                    text=os.path.basename(self.filepath),
+                    text_color="green"
+                )
 
-        self.controller.show_frame("HasilEkstraksiPage", data=data)
+            # 3. Siapkan data untuk halaman hasil
+            data = {
+                'id': last_id,
+                'judul': judul,
+                'nomor_lp': nomor_lp,
+                'tanggal': tanggal,
+                'path_ekstraksi': path_ekstraksi
+            }
+
+            # 4. Bersihkan form input
+            self.entry_judul.delete(0, ctk.END)
+            self.entry_lp.delete(0, ctk.END)
+            self.entry_tanggal.clear()
+            self.filepath = None
+
+            # 5. Pindah ke halaman hasil
+            self.controller.show_frame("HasilEkstraksiPage", data=data)
+
+        # 4) Delay sedikit supaya tulisan "Selesai: ..." sempat kelihatan
+        self.after(1000, finalize)   # 700 ms, bisa diatur 500–1000 ms sesuai selera
+
 
 
 

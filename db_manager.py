@@ -300,15 +300,16 @@ def check_user_credentials(username, password):
 # --- LOGIKA EKSTRAKSI MINUTIAE (CORE LOGIC) ---
 # =========================================================================
 
-def run_minutiae_extraction(input_filepath, case_judul):
-    """
-    Memproses gambar sidik jari (SJ), mengekstrak minutiae menggunakan Fingerflow,
-    dan menyimpan gambar mentah/hasil ekstraksi ke folder DATA_DIR.
-
-    Mengembalikan tuple (path_mentah_tersimpan, path_ekstraksi_tersimpan).
-    """
+def run_minutiae_extraction(input_filepath, case_judul, progress_callback=None):
+    def report(msg):
+        if progress_callback is not None:
+            try:
+                progress_callback(msg)
+            except Exception:
+                pass
 
     # Format judul kasus agar aman digunakan sebagai nama file
+    report("Menyiapkan nama file & lokasi output...")
     sanitized_judul = "".join(
         c for c in case_judul if c.isalnum() or c in (" ", "_")
     ).rstrip()[:30].replace(" ", "_")
@@ -321,6 +322,7 @@ def run_minutiae_extraction(input_filepath, case_judul):
     # 1. Buka Gambar & Simpan Versi Mentah (Grayscale)
     try:
         # Buka gambar dan konversi ke Grayscale (L)
+        report("Memuat gambar dan menyimpan versi mentah (Hitam Putih)...")
         img_pil = Image.open(input_filepath).convert("L")
         img_pil.save(path_mentah, "PNG")  # simpan mentah grayscale untuk arsip
 
@@ -339,6 +341,7 @@ def run_minutiae_extraction(input_filepath, case_judul):
 
     # 1b. ENHANCE GAMBAR SEBELUM DIUMPANKAN KE FINGERFLOW
     try:
+        report("Meningkatkan kualitas gambar sidik jari...")
         enhanced_bgr, enhanced_gray = enhance_fingerprint_image_array(
             img_raw_3channel,
             target_long_side=512,
@@ -355,6 +358,7 @@ def run_minutiae_extraction(input_filepath, case_judul):
     # 2. EKSTRAKSI MINUTIAE (Fingerflow)
     try:
         # Tentukan path lengkap ke setiap model menggunakan folder 'models'
+        report("Memuat model...")
         coarse_path = os.path.join(MODEL_DIR, "CoarseNet.h5")
         fine_path = os.path.join(MODEL_DIR, "FineNet.h5")
         classify_path = os.path.join(MODEL_DIR, "ClassifyNet_6_classes.h5")
@@ -367,14 +371,15 @@ def run_minutiae_extraction(input_filepath, case_judul):
             )
 
         # Inisialisasi Extractor
+        report("memuat model ekstraksi minutiae...")
         extractor = Extractor(
             coarse_net_path=coarse_path,
             fine_net_path=fine_path,
             classify_net_path=classify_path,
             core_net_path=core_path,
         )
-
-        # Ekstraksi minutiae → PAKAI GAMBAR YANG SUDAH DI-ENHANCE
+         # Ekstraksi minutiae → PAKAI GAMBAR YANG SUDAH DI-ENHANCE
+        report("Menjalankan ekstraksi minutiae...")
         output_data = extractor.extract_minutiae(enhanced_bgr)  # Output: dict
 
         # AMBIL DATAFRAME MINUTIAE
@@ -389,6 +394,7 @@ def run_minutiae_extraction(input_filepath, case_judul):
         print(f"DEBUG: Jumlah minutiae yang terdeteksi: {num_minutiae}")
 
         # 3. Visualisasi Hasil Ekstraksi
+        report("Menyusun visualisasi hasil ekstraksi...")
         if num_minutiae == 0:
             print(
                 "Peringatan: Tidak ada minutiae yang terdeteksi. Menyimpan gambar enhance grayscale saja."
@@ -403,6 +409,7 @@ def run_minutiae_extraction(input_filepath, case_judul):
             img_with_minutiae_np = draw_minutiae_func(img_canvas, minutiae_df)
 
             # Konversi ke PIL untuk disimpan
+            report("Menyimpan gambar hasil ekstraksi...")
             img_hasil_pil = Image.fromarray(img_with_minutiae_np)
 
         # Simpan gambar hasil ekstraksi
