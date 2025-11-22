@@ -44,7 +44,7 @@ class RegisterPage(ctk.CTkFrame):
 
         idx = 0
         self.fullname_entry = add_field(idx, "Nama Lengkap:", "Masukkan nama lengkap"); idx += 1
-        self.nrp_entry = add_field(idx, "Pangkat:", "Masukkan nrp"); idx += 1
+        self.nrp_entry = add_field(idx, "NRP:", "Masukkan nrp"); idx += 1
         self.jabatan_entry = add_field(idx, "Jabatan:", "Masukkan jabatan"); idx += 1
         self.nomor_entry = add_field(idx, "Nomor HP:", "Masukkan nomor HP"); idx += 1
         self.email_entry = add_field(idx, "Email:", "Masukkan email"); idx += 1

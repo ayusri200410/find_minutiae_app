@@ -16,7 +16,74 @@ from fingerflow.extractor import Extractor
 
 # Menggunakan satu variabel fungsi tunggal untuk visualisasi
 draw_minutiae_func = None
+def enhance_fingerprint_image_array(
+    img_bgr,
+    target_long_side=512,
+    clahe_clip=2.0,
+    clahe_grid=(8, 8),
+    denoise_strength=5,
+    sharp_amount=1.0,
+):
+    """
+    Enhance gambar sidik jari sebelum ekstraksi minutiae.
 
+    Parameter:
+        img_bgr : np.ndarray, gambar 3-channel (BGR) uint8
+    Return:
+        enhanced_bgr : np.ndarray (BGR)
+        enhanced_gray : np.ndarray (grayscale)
+    """
+    import cv2
+    import numpy as np
+
+    if img_bgr is None:
+        raise ValueError("img_bgr = None (gambar tidak terbaca)")
+
+    # 1. Konversi ke grayscale
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+
+    # 2. Resize (upscale kalau gambar kecil)
+    h, w = gray.shape[:2]
+    long_side = max(h, w)
+    if long_side < target_long_side:
+        scale = target_long_side / float(long_side)
+        new_w, new_h = int(w * scale), int(h * scale)
+        gray = cv2.resize(gray, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+    else:
+        new_h, new_w = h, w  # tidak di-resize
+
+    # 3. CLAHE untuk kontras lokal
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=clahe_grid)
+    gray_clahe = clahe.apply(gray)
+
+    # 4. Denoise ringan (bilateral)
+    if denoise_strength > 0:
+        gray_denoised = cv2.bilateralFilter(
+            gray_clahe,
+            d=7,
+            sigmaColor=denoise_strength * 10,
+            sigmaSpace=denoise_strength,
+        )
+    else:
+        gray_denoised = gray_clahe
+
+    # 5. Sharpen (unsharp masking)
+    if sharp_amount > 0:
+        blur = cv2.GaussianBlur(gray_denoised, (0, 0), sigmaX=1.0)
+        gray_sharp = cv2.addWeighted(
+            gray_denoised,
+            1 + sharp_amount,
+            blur,
+            -sharp_amount,
+            0,
+        )
+    else:
+        gray_sharp = gray_denoised
+
+    # 6. Balik ke BGR untuk FingerFlow
+    enhanced_bgr = cv2.cvtColor(gray_sharp, cv2.COLOR_GRAY2BGR)
+
+    return enhanced_bgr, gray_sharp
 # --- FUNGSI FALLBACK VISUALISASI MENGGUNAKAN OPENCV (SELALU DEFINISIKAN) ---
 def draw_minutiae_fallback_cv2(img_canvas, minutiae_df):
     """Visualisasi minutiae manual menggunakan OpenCV."""
@@ -101,7 +168,7 @@ def ensure_user_columns(conn):
     # Kolom yang diinginkan beserta tipe SQLnya
     columns = {
         "full_name": "TEXT",
-        "pangkat": "TEXT",
+        "nrp": "TEXT",
         "jabatan": "TEXT",
         "nomor_hp": "TEXT",
         "email": "TEXT",
@@ -148,7 +215,7 @@ def init_db():
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             full_name TEXT,
-            pangkat TEXT,
+            nrp TEXT,
             jabatan TEXT,
             nomor_hp TEXT,
             email TEXT,
@@ -197,14 +264,14 @@ def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 
-def register_user(username, password, full_name=None, pangkat=None, jabatan=None, nomor_hp=None, email=None):
+def register_user(username, password, full_name=None, nrp=None, jabatan=None, nomor_hp=None, email=None):
     conn = get_db_connection()
     cursor = conn.cursor()
     password_hashed = hash_password(password)
     try:
         cursor.execute(
-            "INSERT INTO users (username, password_hash, full_name, pangkat, jabatan, nomor_hp, email) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (username, password_hashed, full_name, pangkat, jabatan, nomor_hp, email)
+            "INSERT INTO users (username, password_hash, full_name, nrp, jabatan, nomor_hp, email) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (username, password_hashed, full_name, nrp, jabatan, nomor_hp, email)
         )
         conn.commit()
         conn.close()
@@ -237,92 +304,119 @@ def run_minutiae_extraction(input_filepath, case_judul):
     """
     Memproses gambar sidik jari (SJ), mengekstrak minutiae menggunakan Fingerflow,
     dan menyimpan gambar mentah/hasil ekstraksi ke folder DATA_DIR.
-    
+
     Mengembalikan tuple (path_mentah_tersimpan, path_ekstraksi_tersimpan).
     """
-    
+
     # Format judul kasus agar aman digunakan sebagai nama file
-    sanitized_judul = "".join(c for c in case_judul if c.isalnum() or c in (' ', '_')).rstrip()[:30].replace(' ', '_')
+    sanitized_judul = "".join(
+        c for c in case_judul if c.isalnum() or c in (" ", "_")
+    ).rstrip()[:30].replace(" ", "_")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     base_filename = f"{timestamp}_{sanitized_judul}"
-    
+
     path_mentah = os.path.join(DATA_DIR, f"{base_filename}_mentah.png")
     path_ekstraksi = os.path.join(DATA_DIR, f"{base_filename}_ekstraksi.png")
 
-    # 1. Buka Gambar & Konversi ke format yang sesuai
+    # 1. Buka Gambar & Simpan Versi Mentah (Grayscale)
     try:
         # Buka gambar dan konversi ke Grayscale (L)
-        img_pil = Image.open(input_filepath).convert("L") 
-        img_pil.save(path_mentah, 'PNG') # Simpan yang grayscale untuk arsip
-        
+        img_pil = Image.open(input_filepath).convert("L")
+        img_pil.save(path_mentah, "PNG")  # simpan mentah grayscale untuk arsip
+
         # Konversi ke NumPy Array (1 channel, 0-255)
         img_raw_single_channel = np.array(img_pil)
-        
-        # PENTING: Membuat gambar 3-Channel (RGB) untuk Fingerflow Extractor dan Visualisasi
-        img_raw_3channel = np.stack((img_raw_single_channel,)*3, axis=-1) 
-        
+
+        # Buat 3-channel (BGR) untuk diproses OpenCV / FingerFlow
+        img_raw_3channel = np.stack(
+            (img_raw_single_channel,) * 3,
+            axis=-1,
+        ).astype("uint8")
+
     except Exception as e:
         print(f"ERROR: Gagal memuat atau menyimpan gambar mentah: {e}")
         return None, None
-    
+
+    # 1b. ENHANCE GAMBAR SEBELUM DIUMPANKAN KE FINGERFLOW
+    try:
+        enhanced_bgr, enhanced_gray = enhance_fingerprint_image_array(
+            img_raw_3channel,
+            target_long_side=512,
+            clahe_clip=2.0,
+            clahe_grid=(8, 8),
+            denoise_strength=5,
+            sharp_amount=1.0,
+        )
+    except Exception as e:
+        print(f"WARNING: Gagal enhance gambar, pakai gambar mentah 3-channel. Error: {e}")
+        enhanced_bgr = img_raw_3channel
+        enhanced_gray = img_raw_single_channel
+
     # 2. EKSTRAKSI MINUTIAE (Fingerflow)
     try:
         # Tentukan path lengkap ke setiap model menggunakan folder 'models'
-        coarse_path = os.path.join(MODEL_DIR, 'CoarseNet.h5')
-        fine_path = os.path.join(MODEL_DIR, 'FineNet.h5')
-        classify_path = os.path.join(MODEL_DIR, 'ClassifyNet_6_classes.h5')
-        core_path = os.path.join(MODEL_DIR, 'CoreNet.weights')
-        
+        coarse_path = os.path.join(MODEL_DIR, "CoarseNet.h5")
+        fine_path = os.path.join(MODEL_DIR, "FineNet.h5")
+        classify_path = os.path.join(MODEL_DIR, "ClassifyNet_6_classes.h5")
+        core_path = os.path.join(MODEL_DIR, "CoreNet.weights")
+
         # Pengecekan Eksistensi File Model
         if not all(os.path.exists(p) for p in [coarse_path, fine_path, classify_path, core_path]):
-             raise FileNotFoundError(f"Satu atau lebih file model Fingerflow (.h5/weights) tidak ditemukan di: {MODEL_DIR}")
+            raise FileNotFoundError(
+                f"Satu atau lebih file model Fingerflow (.h5/weights) tidak ditemukan di: {MODEL_DIR}"
+            )
 
-        # Inisialisasi Extractor (Model Loading Terjadi di Sini)
+        # Inisialisasi Extractor
         extractor = Extractor(
             coarse_net_path=coarse_path,
             fine_net_path=fine_path,
             classify_net_path=classify_path,
-            core_net_path=core_path
+            core_net_path=core_path,
         )
-        
-        # Ekstraksi minutiae
-        output_data = extractor.extract_minutiae(img_raw_3channel) # Output adalah Dictionary
-        
-        # AMBIL DATAFRAME MINUTIAE DARI DICTIONARY HASIL EKSTRAKSI
+
+        # Ekstraksi minutiae → PAKAI GAMBAR YANG SUDAH DI-ENHANCE
+        output_data = extractor.extract_minutiae(enhanced_bgr)  # Output: dict
+
+        # AMBIL DATAFRAME MINUTIAE
         minutiae_df = output_data.get("minutiae")
-        
-        # Hitung jumlah minutiae yang terdeteksi
-        num_minutiae = len(minutiae_df) if minutiae_df is not None and not minutiae_df.empty else 0
+
+        # Hitung jumlah minutiae
+        num_minutiae = (
+            len(minutiae_df)
+            if minutiae_df is not None and not minutiae_df.empty
+            else 0
+        )
         print(f"DEBUG: Jumlah minutiae yang terdeteksi: {num_minutiae}")
-        
-        # 3. Tampilkan Hasil Ekstraksi (Visualisasi)
-        
-        # Cek apakah ada minutiae yang terdeteksi
+
+        # 3. Visualisasi Hasil Ekstraksi
         if num_minutiae == 0:
-            print("Peringatan: Tidak ada minutiae yang terdeteksi. Menyimpan gambar mentah 3-channel.")
-            img_hasil_pil = Image.fromarray(img_raw_3channel)
+            print(
+                "Peringatan: Tidak ada minutiae yang terdeteksi. Menyimpan gambar enhance grayscale saja."
+            )
+            # pakai enhanced_gray sebagai gambar hasil
+            img_hasil_pil = Image.fromarray(enhanced_gray)
         else:
-            # Gunakan salinan gambar 3-channel sebagai kanvas
-            img_canvas = img_raw_3channel.copy() 
-            
-            # Panggil draw_minutiae_func (fungsi yang berhasil diimpor atau fallback OpenCV)
-            # Meneruskan DataFrame minutiae_df ke fungsi visualisasi
+            # Gunakan salinan gambar enhance 3-channel sebagai kanvas
+            img_canvas = enhanced_bgr.copy()
+
+            # Panggil draw_minutiae_func (dari fingerflow atau fallback OpenCV)
             img_with_minutiae_np = draw_minutiae_func(img_canvas, minutiae_df)
-            
-            # Konversi hasil NumPy array ke PIL Image untuk disimpan
+
+            # Konversi ke PIL untuk disimpan
             img_hasil_pil = Image.fromarray(img_with_minutiae_np)
-        
+
         # Simpan gambar hasil ekstraksi
-        img_hasil_pil.save(path_ekstraksi, 'PNG') 
-        
+        img_hasil_pil.save(path_ekstraksi, "PNG")
+
     except FileNotFoundError as fnf_e:
-        print(f"ERROR: Model tidak ditemukan. Pastikan 4 file model ada di folder 'models'. {fnf_e}")
+        print(
+            f"ERROR: Model tidak ditemukan. Pastikan 4 file model ada di folder 'models'. {fnf_e}"
+        )
         return None, None
     except Exception as e:
         print(f"ERROR: Gagal ekstraksi minutiae (Fingerflow). Error: {e}")
-        # Hapus file abu-abu jika ada untuk menghindari kebingungan
         if os.path.exists(path_ekstraksi):
-            os.remove(path_ekstraksi) 
+            os.remove(path_ekstraksi)
         return None, None
 
     # Mengembalikan path tempat file disimpan
@@ -333,7 +427,7 @@ def run_minutiae_extraction(input_filepath, case_judul):
 # --- MANAJEMEN RIWAYAT (HISTORY) ---
 # =========================================================================
 
-def fetch_history_counts():
+def fetch_history_counts(id):
     """Mengambil jumlah total kasus (history)."""
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -343,7 +437,8 @@ def fetch_history_counts():
     count_umum = cursor.fetchone()[0]
     
     # Placeholder untuk 'lokal' (jika tidak ada filter yang digunakan)
-    count_lokal = 0 
+    cursor.execute('SELECT COUNT(id) FROM history WHERE user_id = ?', (id,))
+    count_lokal = cursor.fetchone()[0]
     
     conn.close()
     

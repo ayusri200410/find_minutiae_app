@@ -21,6 +21,7 @@ class CTkDatePicker(ctk.CTkFrame):
             width=self.width - 40,
             placeholder_text="YYYY-MM-DD"
         )
+        self.entry.bind("<Key>", lambda e: "break")
         self.entry.pack(side="left", fill="x", padx=(0, 5))
 
         self.btn = ctk.CTkButton(
@@ -151,7 +152,10 @@ class CTkDatePicker(ctk.CTkFrame):
             self.current_month = 1
             self.current_year += 1
         self.build_calendar()
-
+    def clear(self):
+        """Kosongkan tanggal yang dipilih"""
+        self.entry.delete(0, "end")
+        self.selected_date = None
     def get(self):
         return self.entry.get()
 # --- FUNGSI HELPER DISPLAY GAMBAR ---
@@ -170,6 +174,57 @@ def _display_image(label_widget, path, max_size=(250, 180)):
     except Exception as e:
         label_widget.configure(text=f"Gagal memuat gambar:\n{os.path.basename(path)}", image=None)
         print(f"Error display image: {e}")
+
+
+
+def _prepare_image_for_model(path, target_max_side=384):
+    """
+    Menyiapkan gambar khusus untuk input model FingerFlow:
+    - Membuka gambar asli
+    - Mengecilkan sehingga sisi terpanjang <= target_max_side (dengan menjaga aspek rasio)
+    - Menyimpan sebagai file JPEG baru dengan suffix "_model.jpg" di folder images_for_models
+    - Mengembalikan path file baru tersebut
+    """
+    try:
+        img = Image.open(path).convert("RGB")
+    except Exception as e:
+        print("Prepare image: gagal membuka:", e)
+        return path
+
+    w, h = img.size
+    max_dim = max(w, h)
+    if max_dim > target_max_side:
+        scale = target_max_side / float(max_dim)
+        new_size = (int(w * scale), int(h * scale))
+        img = img.resize(new_size, Image.LANCZOS)
+
+    # Tentukan root project = folder di atas "pages"
+    # __file__ = .../minutiae_ekstraksi/pages/cari_minutiae.py
+    # os.path.dirname(__file__)            -> .../minutiae_ekstraksi/pages
+    # os.path.dirname(os.path.dirname())   -> .../minutiae_ekstraksi  (root project)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    # Pastikan folder images_for_models ada di root project
+    images_dir = os.path.join(project_root, "images_for_models")
+    os.makedirs(images_dir, exist_ok=True)
+
+    # Nama file dasar diambil dari nama file asli
+    base = os.path.splitext(os.path.basename(path))[0]
+    out_path = os.path.join(images_dir, f"{base}_model.jpg")
+
+    try:
+        img.save(out_path, format="JPEG", quality=80, optimize=True)
+    except Exception:
+        img.save(out_path, format="JPEG", quality=80)
+
+    try:
+        size_bytes = os.path.getsize(out_path)
+    except Exception:
+        size_bytes = None
+
+    print(f"[MODEL PREP] path={out_path}, size={size_bytes}, dims={img.size}")
+    return out_path
+
 
 # =========================================================================
 # --- HALAMAN 3A: CARI MINUTIAE (FORM) ---
@@ -259,7 +314,7 @@ class CariMinutiaePage(ctk.CTkFrame):
         
         # Tombol Lanjut
         # PERBAIKAN FONT 9/13
-        lanjut_button = ctk.CTkButton(self.input_frame, text="LANJUT & PROSES", command=self.process_and_save, height=40, font=self.controller.FONT_SUBJUDUL, fg_color="#1f6aa5", hover_color="#18537a")
+        lanjut_button = ctk.CTkButton(self.input_frame, text="LANJUT & PROSES", command=self.process_and_save, height=40, font=self.controller.FONT_SUBJUDUL, fg_color="#0d8427", hover_color="#18537a")
         lanjut_button.grid(row=5, column=0, pady=30, sticky="s")
 
 
@@ -314,9 +369,16 @@ class CariMinutiaePage(ctk.CTkFrame):
         self.upload_label.configure(text="Memproses...", text_color="orange")
         self.update_idletasks()
 
+        # --- PREPROSES GAMBAR UNTUK MODEL FINGERFLOW ---
+        try:
+            model_input_path = _prepare_image_for_model(self.filepath, target_max_side=512)
+        except Exception as e:
+            print("Gagal menyiapkan gambar untuk model, gunakan gambar asli:", e)
+            model_input_path = self.filepath
+
         # 1. Jalankan Model Ekstraksi & Simpan File ke Disk
         try:
-            path_mentah, path_ekstraksi = run_minutiae_extraction(self.filepath, judul)
+            path_mentah, path_ekstraksi = run_minutiae_extraction(model_input_path, judul)
         except Exception as e:
             messagebox.showerror("Error Ekstraksi", f"Gagal Ekstraksi! Cek konsol. Error: {e}")
             self.upload_label.configure(text="Ekstraksi Gagal!", text_color="red")
@@ -355,7 +417,7 @@ class CariMinutiaePage(ctk.CTkFrame):
             # Bersihkan form
             self.entry_judul.delete(0, ctk.END)
             self.entry_lp.delete(0, ctk.END)
-            self.entry_tanggal.delete(0, ctk.END)
+            self.entry_tanggal.clear()
             self.filepath = None
             
             self.controller.show_frame("HasilEkstraksiPage", data=data) 

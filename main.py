@@ -25,6 +25,7 @@ ICON_PATH = "assets/icon.png"
 DUMMY_IMAGE_PATH = "assets/fingerprint_dummy.jpg"
 
 # Pastikan folder assets dan images ada
+os.makedirs("images_for_models", exist_ok=True)
 os.makedirs("images", exist_ok=True)
 os.makedirs("assets", exist_ok=True) 
 
@@ -57,6 +58,7 @@ class App(ctk.CTk):
         self.current_sidebar = None
         self.current_frame = None
         self.logged_in_user_id = None 
+        self.logged_in_user_name = None
 
         
         
@@ -144,6 +146,8 @@ class App(ctk.CTk):
             from db_manager import get_user_by_id
             u = get_user_by_id(user_id)
             print("[DEBUG] login_success: user from db =", u)
+
+            self.logged_in_user_name = u.get("full_name") or u.get("username")
         except Exception as e:
             print("[DEBUG] login_success: get_user_by_id error:", e)
 

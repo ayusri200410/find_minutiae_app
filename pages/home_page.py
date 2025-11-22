@@ -10,6 +10,7 @@ class HomePage(ctk.CTkFrame):
         
         self.create_header()
         self.create_dashboard()
+        
     
     def create_header(self):
         header_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -41,10 +42,18 @@ class HomePage(ctk.CTkFrame):
         self.lokal_label.pack(pady=(20, 0), padx=20)
         ctk.CTkLabel(self.card_lokal, text="Jumlah Pencarian Lokal", font=self.controller.FONT_UTAMA).pack(pady=(0, 20), padx=20)
 
-        ctk.CTkLabel(self, text="Selamat Datang di Aplikasi Find Minutiae", font=self.controller.FONT_SUBJUDUL).grid(row=2, column=0, sticky="n", pady=50)
+        nama = getattr(self.controller, "logged_in_user_name", "Pengguna")
+        id = getattr(self.controller, "logged_in_user_id", "ID Tidak Diketahui")
+    
+
+        ctk.CTkLabel(
+            self,
+            text=f"Selamat Datang {nama}, di Find Minutiae",
+            font=self.controller.FONT_SUBJUDUL
+        ).grid(row=2, column=0, sticky="n", pady=50)
 
     def refresh_data(self):
         """Ambil data dari DB dan update label dashboard."""
-        umum, lokal = fetch_history_counts()
+        umum, lokal = fetch_history_counts(id=self.controller.logged_in_user_id)
         self.umum_label.configure(text=str(umum))
         self.lokal_label.configure(text=str(lokal))
