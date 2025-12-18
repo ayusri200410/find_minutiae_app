@@ -10,28 +10,49 @@ import pandas as pd # Tambahkan Pandas untuk menangani DataFrame minutiae
 import cv2 # Digunakan untuk visualisasi fallback OpenCV
 from fingerflow.extractor import Extractor 
 import shutil 
-
+import sys, os
 # =========================================================================
 # --- KONFIGURASI PATHS ---
 # =========================================================================
 
-# Tentukan direktori aplikasi saat ini
-BASE_DIR = os.path.dirname(os.path.abspath(__file__)) 
-DB_NAME = 'minutiae_app_fixed.db'
-DB_PATH = os.path.join(BASE_DIR, DB_NAME)
-MINUTIAE_COUNT = 0
+import os, sys
 
-# Folder untuk menyimpan gambar mentah dan hasil ekstraksi
-DATA_DIR = os.path.join(BASE_DIR, 'data_kasus')
-MENTAH_DIR = os.path.join(DATA_DIR, 'mentah')
-EKSTRAKSI_DIR = os.path.join(DATA_DIR, 'ekstraksi')
-# Pastikan semua folder ada
+def resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
+
+def app_data_path(relative_path):
+    if getattr(sys, 'frozen', False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.abspath(".")
+    return os.path.join(base, relative_path)
+
+def get_app_base():
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.abspath(".")
+
+APP_BASE = get_app_base()
+
+# WRITEABLE
+DATA_DIR = os.path.join(APP_BASE, "data_kasus")
+MENTAH_DIR = os.path.join(DATA_DIR, "mentah")
+EKSTRAKSI_DIR = os.path.join(DATA_DIR, "ekstraksi")
+
 for d in (DATA_DIR, MENTAH_DIR, EKSTRAKSI_DIR):
     os.makedirs(d, exist_ok=True)
 
-# Folder untuk model Fingerflow (.h5)
-MODEL_DIR = os.path.join(BASE_DIR, 'models') 
-os.makedirs(MODEL_DIR, exist_ok=True) 
+# READ ONLY (MODEL)
+MODEL_DIR = resource_path("models")
+DB_PATH = os.path.join(APP_BASE, "minutiae_app_fixed.db")
+
+# MODEL_FILE = os.path.join(MODEL_DIR, "minutiae_net.h5")
+
+# if not os.path.exists(MODEL_FILE):
+#     raise FileNotFoundError(f"Model tidak ditemukan: {MODEL_FILE}")
+
 
 
 # =========================================================================
@@ -410,6 +431,7 @@ def run_minutiae_extraction(input_filepath, case_judul, progress_callback=None):
             print(
                 "Peringatan: Tidak ada minutiae yang terdeteksi. Menyimpan gambar enhance grayscale saja."
             )
+            
             # pakai enhanced_gray sebagai gambar hasil
             img_hasil_pil = Image.fromarray(enhanced_gray)
         else:
@@ -418,10 +440,13 @@ def run_minutiae_extraction(input_filepath, case_judul, progress_callback=None):
 
             # Panggil draw_minutiae_func (dari fingerflow atau fallback OpenCV)
             img_with_minutiae_np = draw_minutiae_func(img_canvas, minutiae_df)
-
+            img_with_minutiae_np = img_with_minutiae_np.astype("uint8")
             # Konversi ke PIL untuk disimpan
             report("Menyimpan gambar hasil ekstraksi...")
             img_hasil_pil = Image.fromarray(img_with_minutiae_np)
+            print("DEBUG SAVE PATH:", path_ekstraksi)
+            print("DEBUG EXISTS DIR:", os.path.exists(os.path.dirname(path_ekstraksi)))
+
 
         # Simpan gambar hasil ekstraksi
         img_hasil_pil.save(path_ekstraksi, "PNG")
